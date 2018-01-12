@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+from argparse import ArgumentParser
+import gc
+import logging
+import sys
+
+from asyncio import Protocol
+from kore import config_factory, container_factory
+from kore_shell.lib.dict import merge_dict
+from kore_shell.lib.parsers import KVParser
+
+log = logging.getLogger(__name__)
+
+
+class EchoProtocol(Protocol):
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def connection_lost(self, exc):
+        self.transport = None
+
+    def data_received(self, data):
+        self.transport.write(data)
+
+
+def setup_logging(debug=False):
+    log_level = logging.DEBUG if debug else logging.INFO
+    sh = logging.StreamHandler()
+    sh.setLevel(log_level)
+    log.addHandler(sh)
+    log.setLevel(log_level)
+
+
+def get_parser(name):
+    default_host = "127.0.0.1"
+    default_port = 7069
+
+    parser = ArgumentParser(name)
+
+    parser.add_argument('--config-type', default='dict')
+    parser.add_argument('--config-opt', type=KVParser().parse,
+                        action='append', default=[])
+    parser.add_argument("-d", "--debug",
+                        action="store_true", dest="debug")
+    parser.add_argument("-H", "--host",
+                        help="Hostname of the app " + \
+                        "[default %s]" % default_host,
+                        default=default_host)
+    parser.add_argument("-P", "--port", type=int,
+                        help="Port for the app " + \
+                        "[default %s]" % default_port,
+                        default=default_port)
+    return parser
+
+
+def main(name, *args):
+    parser = get_parser(name)
+
+    arguments = parser.parse_args()
+
+    setup_logging(arguments.debug)
+
+    config = config_factory.create(
+        arguments.config_type, **merge_dict(*arguments.config_opt))
+    container = container_factory.create(config=config)
+
+    loop = container('loop', namespace='polarix')
+    loop.set_debug(arguments.debug)
+
+    # simple remote protocol support only
+    coro = loop.create_server(EchoProtocol, arguments.host, arguments.port)
+    srv = loop.run_until_complete(coro)
+
+    log.info("Starting Polarix on {0}:{1}".format(arguments.host, arguments.port))
+    try:
+        loop.run_forever()
+    finally:
+        if arguments.debug and  hasattr(loop, 'print_debug_info'):
+            gc.collect()
+            print(chr(27) + "[2J")
+            loop.print_debug_info()
+
+    loop.close()
+
+if __name__ == '__main__':
+    main(sys.argv[0], sys.argv[1:])
